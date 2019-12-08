@@ -1,5 +1,5 @@
 import * as t from 'io-ts';
-import { NonEmptyString } from 'io-ts-types/lib/NonEmptyString';
+import { withMessage } from 'io-ts-types/lib/withMessage';
 import isEmail from 'validator/lib/isEmail';
 import isMobilePhone from 'validator/lib/isMobilePhone';
 
@@ -70,11 +70,12 @@ import isMobilePhone from 'validator/lib/isMobilePhone';
 // The best thing is, with functional programming, we can compose all things
 // infinitely without source code rot, because pure functions do not rot.
 // That's why functional programming is so awesome. Code does not rot so easily.
-// Let's start with things we need for sign up form.
 
-// All forms use strings and strings has to be trimmed.
-// We all know that ' some@email.com  ' in database would be really bad.
-// But where we should trim? In UI? Before saving to database? Everywhere?
+// Let's start with things we need for sign up form. Types and validation errors.
+
+// Almost all forms use strings and strings must be trimmed and restricted for max
+// length at least. We don't want untrimmed ' some@email.com  ' strings.
+// But where we should do that? In UI? Before saving to database? Everywhere?
 // We don't know and we can't know, because classical type system can't tell us.
 // Haskell approach is to tell via types explicitly where we can expect already
 // trimmed string and where we have to trim. Basically, we validate only
@@ -82,139 +83,151 @@ import isMobilePhone from 'validator/lib/isMobilePhone';
 // Inside the aplication, we use branded type (similar to Haskel newtype), so
 // the code is both perfectly readable and safe.
 
+// As for validation errors, we will use an object, because with one object,
+// we can enforce everything is translated by types. Also, translation is out
+// of the scope of validation.
+
+export const validationErrors = {
+  TypeString: 'Invalid string type.',
+  NonEmptyString: 'Can not be empty.',
+  TrimmedString: 'Please remove leading and trailing whitespaces.',
+  TooLong: 'Too long.',
+  TooShort: 'Too short.',
+  EmailString: 'Email is not valid.',
+  PhoneString: 'Invalid phone number.',
+};
+
+// Helper types.
+
+// Just give t.string a validation error message.
+export const TypeString = withMessage(
+  t.string,
+  () => validationErrors.TypeString,
+);
+// console.log(PathReporter.report(TypeString.decode(''))); // ok
+// console.log(PathReporter.report(TypeString.decode(null))); // ["Invalid string."]
+
+// Create branded NonEmptyString.
+// Take a look how compiler protects us. We can't assign a wrong value:
+// Error: Type '""' is not assignable to type 'Branded<string, NonEmptyStringBrand>'.
+// const a: NonEmptyString = ''; // ' ' doesn't work either.
+// We can't assign any string, not even empty.
+// But we can use branded string directly:
+// const toUpperCase = (foo: NonEmptyString) => foo.toUpperCase();
+interface NonEmptyStringBrand {
+  readonly NonEmptyString: unique symbol;
+}
+export const NonEmptyString = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, NonEmptyStringBrand> => s.length > 0,
+    'NonEmptyString',
+  ),
+  () => validationErrors.NonEmptyString,
+);
+
 interface TrimmedStringBrand {
   readonly TrimmedString: unique symbol;
 }
-const TrimmedString = t.brand(
-  t.string,
-  (s): s is t.Branded<string, TrimmedStringBrand> =>
-    // Trim can be costly, so define max length for all trimmed strings once for all.
-    s.length < 10000 && s.trim().length === s.length,
-  'TrimmedString',
+export const TrimmedString = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, TrimmedStringBrand> =>
+      s.trim().length === s.length,
+    'TrimmedString',
+  ),
+  () => validationErrors.TrimmedString,
 );
-type TrimmedString = t.TypeOf<typeof TrimmedString>;
 
-// Take a look how compiler protects us. We can't assign a wrong value.
-// Type '"a "' is not assignable to type 'Branded<string, TrimmedStringBrand>'.
-// const a: TrimmedString = 'a '
+export const NonEmptyTrimmedString = t.intersection([
+  // The order matters. We want to check TypeString first.
+  TypeString,
+  NonEmptyString,
+  TrimmedString,
+]);
 
-// We have to use decode which returns Either. Note chaining via fold.
-// In functional programming, we chain all the time:
-// pipe(
-//   TrimmedString.decode('a '),
-//   fold(onLeft, onRight)
-// )
+interface Max64StringBrand {
+  readonly Max64String: unique symbol;
+}
+export const Max64String = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, Max64StringBrand> => s.length <= 64,
+    'Max64String',
+  ),
+  () => validationErrors.TooLong,
+);
 
-// What if we don't like unknown type in decode? We can extract "output" type,
-// a string in this case, with another helper type:
-type TrimmedStringOutput = t.OutputOf<typeof TrimmedString>;
+interface Max512StringBrand {
+  readonly Max512String: unique symbol;
+}
+export const Max512String = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, Max512StringBrand> => s.length <= 512,
+    'Max512String',
+  ),
+  () => validationErrors.TooLong,
+);
 
-// When a value comes out of our app, it's unknown. Let's decode it with pipe and fold:
-// import * as E from 'fp-ts/lib/Either';
-// import { pipe } from 'fp-ts/lib/pipeable';
-// pipe(
-//   // Try null, '', 'foo ', whatever.
-//   TrimmedString.decode(' adfg'),
-//   E.fold(
-//     e => {
-//       // TODO: Use reporter.
-//       console.log(`Failed codec: ${e[0].context[0].type.name}`);
-//     },
-//     string => {
-//       console.log(`Successfully decoded string: ${string}`);
-//     },
-//   ),
-// );
+interface Min4StringBrand {
+  readonly Min4String: unique symbol;
+}
+export const Min4String = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, Min4StringBrand> => s.length >= 4,
+    'Min4String',
+  ),
+  () => validationErrors.TooShort,
+);
 
-// We validate only external values. Inside application, we use branded types:
-// const toUpperCase = (foo: TrimmedString) => foo.toUpperCase();
-// Note TrimmedString still can be used as a regular string.
+interface EmailStringBrand {
+  readonly EmailString: unique symbol;
+}
+export const EmailString = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, EmailStringBrand> => isEmail(s),
+    'EmailString',
+  ),
+  () => validationErrors.EmailString,
+);
 
-// OK, we have TrimmedString, so how to create non empty trimmed string?
-// Let's start with NonEmptyString. Fortunately, such codec already exists.
-// import { NonEmptyString } from 'io-ts-types/lib/NonEmptyString';
-// To create NonEmptyTrimmedString, we compose TrimmedString and NonEmptyString.
-
-const NonEmptyTrimmedString = t.intersection([TrimmedString, NonEmptyString]);
-type NonEmptyTrimmedString = t.TypeOf<typeof NonEmptyTrimmedString>;
-
-// Note we did not export anything yet. That's because TrimmedString, NonEmptyString,
-// and NonEmptyTrimmedString are just helper types. Let's go to domain types.
+interface PhoneStringBrand {
+  readonly PhoneString: unique symbol;
+}
+export const PhoneString = withMessage(
+  t.brand(
+    t.string,
+    (s): s is t.Branded<string, PhoneStringBrand> => isMobilePhone(s),
+    'PhoneString',
+  ),
+  () => validationErrors.PhoneString,
+);
 
 // Domain types.
-// Note we export both const and type under the same name. TypeScript is awesome.
 
-interface String50Brand {
-  readonly String50: unique symbol;
-}
-export const String50 = t.brand(
-  NonEmptyTrimmedString,
-  (s): s is t.Branded<NonEmptyTrimmedString, String50Brand> => s.length < 50,
-  'String50',
-);
-export type String50 = t.TypeOf<typeof String50>;
+export const String64 = t.intersection([NonEmptyTrimmedString, Max64String]);
+export type String64 = t.TypeOf<typeof String64>;
 
-interface String800Brand {
-  readonly String800: unique symbol;
-}
-export const String800 = t.brand(
-  NonEmptyTrimmedString,
-  (s): s is t.Branded<NonEmptyTrimmedString, String800Brand> => s.length < 800,
-  'String800',
-);
-export type String800 = t.TypeOf<typeof String800>;
+export const String512 = t.intersection([NonEmptyTrimmedString, Max512String]);
+export type String512 = t.TypeOf<typeof String512>;
 
-// OK, we have String50 and String800 types. But for SignUpForm,
-// we also need Email, Password, and Option<Phone> types.
-
-interface EmailBrand {
-  readonly Email: unique symbol;
-}
-export const Email = t.brand(
-  NonEmptyTrimmedString,
-  (s): s is t.Branded<NonEmptyTrimmedString, EmailBrand> => isEmail(s),
-  'Email',
-);
+export const Email = t.intersection([String64, EmailString]);
 export type Email = t.TypeOf<typeof Email>;
 
-interface PasswordBrand {
-  readonly Password: unique symbol;
-}
-export const Password = t.brand(
-  NonEmptyTrimmedString,
-  (s): s is t.Branded<NonEmptyTrimmedString, PasswordBrand> => s.length > 5,
-  'Password',
-);
+export const Password = t.intersection([String512, Min4String]);
 export type Password = t.TypeOf<typeof Password>;
 
-interface PhoneBrand {
-  readonly Phone: unique symbol;
-}
-export const Phone = t.brand(
-  NonEmptyTrimmedString,
-  (s): s is t.Branded<NonEmptyTrimmedString, PhoneBrand> => isMobilePhone(s),
-  'Phone',
-);
+export const Phone = t.intersection([NonEmptyTrimmedString, PhoneString]);
 export type Phone = t.TypeOf<typeof Phone>;
 
-// We have all types we need so we can compose SignUpForm type.
 export const SignUpForm = t.type({
-  company: String50,
+  company: String64,
   email: Email,
   password: Password,
   phone: Phone,
   sendNewsletter: t.boolean,
 });
 export type SignUpForm = t.TypeOf<typeof SignUpForm>;
-
-// // Great, we can validate via decode:
-// console.log(
-//   SignUpForm.decode({
-//     company: 'asdfasdfasdf',
-//     email: 'a@s.com',
-//     password: 'sdfgsdfg',
-//     phone: '775326683',
-//     sendNewsletter: true,
-//   }),
-// );
-// For full-fledged validation, check signup form with useForm hook.

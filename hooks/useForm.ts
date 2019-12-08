@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Email, Password, String50, Phone } from '../types';
+import { Email, Password, String64, Phone } from '../types';
 
 // How the ideal form validation library should be designed?
 // Think about it. A "form" can contain anything.
@@ -28,7 +28,7 @@ import { Email, Password, String50, Phone } from '../types';
 // I believe this code is simple enough to be copy-pasted, but sure it can be a library.
 
 // Group text input based types.
-const TextInputField = t.union([String50, Email, Password, Phone]);
+const TextInputField = t.union([String64, Email, Password, Phone]);
 // Define text input props for them.
 interface TextInputProps {
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -60,19 +60,18 @@ type Fields<T> = {
   };
 };
 
-// Ideally, this should be union of all codecs names.
-// https://github.com/gcanti/io-ts/issues/392
-type ErrorType = string;
+type Refs<P extends t.Props> = { [K in keyof P]: RefObject<any> };
 
-type InvalidFields<T> = Partial<
-  {
-    [K in keyof T]: ErrorType;
-  }
->;
+type FormErrors<T> = Partial<{ [K in keyof T]: string }>;
 
-type Refs<P extends t.Props> = {
-  [K in keyof P]: RefObject<any>;
-};
+export const errorsToFormErrors = <T extends t.Errors>(
+  errors: T,
+): FormErrors<T> =>
+  errors.reduce((acc, error) => {
+    const key = error.context[1].key;
+    if (key in acc) return acc;
+    return { ...acc, [key]: error.message };
+  }, {});
 
 export const useForm = <P extends t.Props>(
   codec: t.TypeC<P>,
@@ -89,37 +88,20 @@ export const useForm = <P extends t.Props>(
   // Creating refs is very cheap so we don't have to create them lazily.
   const refsRef = useRef<Refs<P>>(
     Object.keys(codec.props).reduce(
-      // This does not break rules of hooks as long as a codec is always the same.
+      // This does not break rules of hooks as long as the codec is always the same.
       // eslint-disable-next-line react-hooks/rules-of-hooks
       (acc, key) => ({ ...acc, [key]: useRef() }),
       {} as Refs<P>,
     ),
   );
 
-  // Messages should be read from React context react-intl or similar.
-  // TODO: Type should be infered from codecs.
-  const errorMessages = useMemo<any>(
-    () => ({
-      Email: 'Email is not valid.',
-      NonEmptyString: 'Field can not be empty.',
-      Password: 'Password is too short.',
-      Phone: 'Invalid phone number.',
-      String50: 'Max 50 characters.',
-      String800: 'Max 800 characters.',
-      TrimmedString: 'Please remove trailing whitespaces.',
-    }),
-    [],
-  );
+  const [formErrors, setFormErrors] = useState<FormErrors<P>>({});
 
-  const [invalidFields, setInvalidFields] = useState<
-    InvalidFields<t.TypeOfProps<P>>
-  >({});
-
-  const focusFirstInvalidField = useCallback((invalidKeys: string[]) => {
+  const focusFirstInvalidField = useCallback((formErrors: FormErrors<P>) => {
     const isDOMElement: Refinement<any, Element> = (a): a is Element =>
       'nodeType' in a && a.nodeType === Node.ELEMENT_NODE;
 
-    const firstFieldInDOM = invalidKeys
+    const firstFieldInDOM = Object.keys(formErrors)
       .map(key => refsRef.current[key])
       .sort(({ current: a }, { current: b }) => {
         if (!isDOMElement(a) || !isDOMElement(b)) return 0;
@@ -135,21 +117,15 @@ export const useForm = <P extends t.Props>(
 
   const onFail = useCallback(
     (errors: t.Errors) => {
-      const invalidFields = errors.reduce((acc, error) => {
-        // t.ValidationError is weird but manageable.
-        // First is some object, second is key, last is the first error.
-        const key = error.context[1].key;
-        const name = error.context[error.context.length - 1].type.name;
-        return { ...acc, [key]: name };
-      }, {});
-      setInvalidFields(invalidFields);
-      focusFirstInvalidField(Object.keys(invalidFields));
+      const formErrors = errorsToFormErrors(errors);
+      setFormErrors(formErrors);
+      focusFirstInvalidField(formErrors);
     },
     [focusFirstInvalidField],
   );
 
   const onSuccess = useCallback(() => {
-    setInvalidFields({});
+    setFormErrors({});
   }, []);
 
   const validate = useCallback(() => {
@@ -201,11 +177,11 @@ export const useForm = <P extends t.Props>(
     return Object.keys(codec.props).reduce((acc, key) => {
       const type = codec.props[key];
       const props = createProps(key, type);
-      const isInvalid = key in invalidFields;
-      const error = errorMessages[invalidFields[key]] || 'fok';
+      const isInvalid = key in formErrors;
+      const error = formErrors[key] || '';
       return { ...acc, [key]: { props, isInvalid, error } };
-    }, {} as Fields<t.TypeOfProps<P>>);
-  }, [codec.props, errorMessages, invalidFields, state, validate]);
+    }, {} as Fields<P>);
+  }, [codec.props, formErrors, state, validate]);
 
   return useMemo(() => ({ fields, reset, state, validate }), [
     fields,
